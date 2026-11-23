@@ -14,6 +14,7 @@ Asynchronous image processing for the Werant ecosystem.
 [![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?style=for-the-badge&logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
 [![MinIO](https://img.shields.io/badge/MinIO-C72E49?style=for-the-badge&logo=minio&logoColor=white)](https://min.io/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge)](LICENSE)
 
 <br />
 
@@ -370,6 +371,12 @@ Adapter references: [ImageMagick command-line options](https://imagemagick.org/c
 - [ ] Automatic reconciliation of orphaned objects after abrupt termination.
 - [ ] Persistent metrics and operational alerts.
 - [ ] Container image and deployment manifests.
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
+
+Copyright (c) 2026 Leonardo Leal.
 
 ## Engineering philosophy
 

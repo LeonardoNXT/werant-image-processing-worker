@@ -1,10 +1,145 @@
-# Image Processing Worker
+<div align="center">
 
-Worker Go que consome pedidos Kafka, valida imagens no bucket `incoming`, gera
-versões no bucket `processed` e registra o resultado em uma outbox PostgreSQL.
-Não contém producer Kafka. Outro worker publica o JSON de `payload` em `output_topic`.
+# WERANT
 
-## Executar
+### Image Processing Worker
+
+**Seguro. Idempotente. Orientado a eventos.**
+
+Processamento assíncrono de imagens para o ecossistema Werant.
+
+<br />
+
+[![Go](https://img.shields.io/badge/Go-00ADD8?style=for-the-badge&logo=go&logoColor=white)](https://go.dev/)
+[![Apache Kafka](https://img.shields.io/badge/Apache_Kafka-231F20?style=for-the-badge&logo=apachekafka&logoColor=white)](https://kafka.apache.org/)
+[![MinIO](https://img.shields.io/badge/MinIO-C72E49?style=for-the-badge&logo=minio&logoColor=white)](https://min.io/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=for-the-badge&logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+
+<br />
+
+![Architecture](https://img.shields.io/badge/Architecture-Hexagonal-18181B?style=flat-square)
+![Messaging](https://img.shields.io/badge/Messaging-Kafka-18181B?style=flat-square)
+![Consistency](https://img.shields.io/badge/Consistency-Transactional_Outbox-18181B?style=flat-square)
+![Processing](https://img.shields.io/badge/Processing-ImageMagick_7-18181B?style=flat-square)
+
+</div>
+
+---
+
+## Visão geral
+
+`werant-image-processing-worker` é um worker Go que consome pedidos do Kafka,
+valida imagens não confiáveis, gera as versões solicitadas com ImageMagick e
+registra o resultado em uma outbox PostgreSQL.
+
+Os binários permanecem fora do Kafka. A mensagem transporta o contrato e a
+chave do objeto; o original é lido do bucket de entrada e as versões são
+gravadas no bucket processado configurado.
+
+A implementação atual fornece:
+
+- consumo serial com commit manual e rebalance bloqueado durante o trabalho;
+- validação do envelope, do contrato v1 e das chaves de objeto;
+- detecção de JPEG, PNG, GIF e WebP pelo conteúdo;
+- limites de bytes, pixels, frames, tempo, memória e disco;
+- crop centralizado, redução proporcional e conversão por versão;
+- preservação de GIF e WebP animado quando a saída é WebP;
+- armazenamento S3-compatible com buckets separados;
+- outbox PostgreSQL com deduplicação e lock por imagem;
+- compensação de uploads quando a persistência falha;
+- testes unitários, testes reais com ImageMagick e validação contínua.
+
+> [!NOTE]
+> Este repositório não publica eventos no Kafka. Ele persiste o resultado e o
+> `output_topic` na outbox; um publicador externo é responsável pela entrega.
+
+## Arquitetura
+
+### Fluxo de processamento
+
+```mermaid
+flowchart LR
+    PRODUCER["Serviço Werant"] -->|Pedido v1| INPUT[(Kafka)]
+    INPUT -->|Commit manual| WORKER["Image Processing Worker"]
+    WORKER -->|Get original| INCOMING[(MinIO · incoming)]
+    WORKER --> ENGINE["Validação + ImageMagick 7"]
+    ENGINE -->|Put versões| PROCESSED[(MinIO · processed)]
+    WORKER -->|Evento de resultado| OUTBOX[(PostgreSQL outbox)]
+    OUTBOX -.->|Publicador externo| OUTPUT[(Kafka · outputTopic)]
+```
+
+O processamento de cada registro segue estas etapas:
+
+1. validar a sintaxe JSON e os dados necessários para roteamento;
+2. adquirir o lock PostgreSQL do `imageId` e procurar um resultado anterior;
+3. validar o contrato, o formato detectado e os limites do arquivo;
+4. gerar localmente todas as versões antes de iniciar os uploads;
+5. gravar os artefatos no bucket processado;
+6. persistir o evento de sucesso ou rejeição na outbox;
+7. remover o original e confirmar o offset Kafka somente após a conclusão.
+
+Falhas de infraestrutura interrompem o consumer sem confirmar o registro.
+Falhas definitivas do conteúdo geram um evento `IMAGE_PROCESSING_FAILED`.
+
+### Componentes
+
+| Componente | Responsabilidade |
+| :-- | :-- |
+| Kafka | Receber pedidos e controlar a entrega por offset |
+| MinIO incoming | Armazenar o arquivo original até a conclusão |
+| ImageMagick 7 | Recortar, redimensionar, compor animações e codificar saídas |
+| MinIO processed | Armazenar as versões finais |
+| PostgreSQL | Serializar trabalho por imagem, deduplicar e manter a outbox |
+| Publicador externo | Publicar o `payload` da outbox no `output_topic` |
+
+## Estrutura do repositório
+
+```text
+.
+├── .github/workflows/ci.yml          # Qualidade, testes e vulnerabilidades
+├── application
+│   ├── ports                         # Contratos de storage, processor e outbox
+│   └── usecases                      # Orquestração e compensação do pipeline
+├── cmd/worker/main.go                # Entry point do worker
+├── domain
+│   ├── patterns                      # Limites operacionais e formatos
+│   ├── image.go                      # Pedido, resultado e validações
+│   └── outbox.go                     # Entidade da outbox
+├── infrastructure
+│   ├── config                        # Configuração por ambiente
+│   ├── dto                           # Desserialização do contrato Kafka
+│   ├── messenger                     # Cliente e consumer Kafka
+│   ├── processing                    # Inspeção, crop e ImageMagick
+│   ├── storage                       # Adaptadores MinIO e PostgreSQL
+│   └── worker                        # Bootstrap e ciclo de vida do processo
+├── observability                     # Registro de falhas de limpeza
+├── scripts/run-worker.ps1            # Inicialização local no Windows
+├── .env.example
+├── go.mod
+└── go.sum
+```
+
+## Configuração
+
+| Variável | Obrigatória | Padrão | Responsabilidade |
+| :-- | :--: | :-- | :-- |
+| `KAFKA_BROKERS` | Sim | — | Brokers separados por vírgula |
+| `KAFKA_TOPICS` | Sim | — | Tópicos de entrada separados por vírgula |
+| `MINIO_ENDPOINT` | Sim | — | Endpoint S3-compatible em `host:port` |
+| `MINIO_ACCESS_KEY` | Sim | — | Access key do MinIO |
+| `MINIO_SECRET_KEY` | Sim | — | Secret key do MinIO |
+| `MINIO_SECURE` | Não | `false` | Habilita TLS na conexão MinIO |
+| `MINIO_INCOMING_BUCKET_NAME` | Sim | — | Bucket dos arquivos originais |
+| `MINIO_PROCESSED_BUCKET_NAME` | Sim | — | Bucket das versões processadas; deve ser diferente do incoming |
+| `POSTGRES_URL` | Sim | — | URL de conexão com o banco exclusivo do worker |
+| `POSTGRES_USER` | Não | URL | Sobrescreve o usuário presente em `POSTGRES_URL` |
+| `POSTGRES_PASSWORD` | Não | URL | Sobrescreve a senha presente em `POSTGRES_URL` |
+| `IMAGEMAGICK_BINARY` | Não | `magick` | Nome ou caminho do executável ImageMagick 7 |
+
+Use [.env.example](.env.example) como referência. Não versionar credenciais
+reais; `.env` e suas variantes locais são ignorados pelo Git.
+
+## Desenvolvimento local
 
 Requisitos: Go 1.26+, ImageMagick 7 com delegates JPEG/PNG/WebP, PostgreSQL e
 Kafka disponíveis, além dos dois buckets MinIO já criados. O banco é exclusivo
@@ -12,7 +147,7 @@ deste worker e precisa ser criado previamente. A tabela e o índice da outbox
 são criados na inicialização por uma migração SQL embutida; a aplicação precisa
 de permissão para esse DDL inicial.
 
-Exporte as variáveis de [.env.example](.env.example) no processo. No Windows,
+Exporte as variáveis de `.env.example` no processo. No Windows,
 `scripts/run-worker.ps1` carrega o `.env` antes de iniciar o worker.
 `POSTGRES_URL` pode conter credenciais; os campos
 `POSTGRES_USER` e `POSTGRES_PASSWORD`, quando preenchidos, sobrescrevem os da URL.
@@ -37,8 +172,6 @@ etapas de publicação ou deploy.
 Os testes de conversão usam o `magick` do PATH e são pulados caso ele não exista.
 Para produção, configure supervisão com backoff de reinicialização: falhas de
 infraestrutura encerram o consumer sem confirmar o registro problemático.
-O diretório local ainda pode se chamar `image-parsing-worker`; o módulo Go já
-se chama `image-processing-worker`. A pasta não é renomeada pelo programa.
 
 ## Entrada v1
 
@@ -137,8 +270,8 @@ Outros códigos: `INVALID_REQUEST`, `UNSUPPORTED_INPUT_FORMAT`,
 `UNSUPPORTED_OUTPUT_FORMAT`, `INPUT_TOO_LARGE`, `PIXEL_LIMIT_EXCEEDED`,
 `FRAME_LIMIT_EXCEEDED`, `INVALID_IMAGE`, `IMAGE_PROCESSING_FAILED`.
 
-A tabela preserva os campos da entidade Java e acrescenta `payload`,
-`output_topic` e `request_event_id UNIQUE`. `aggregate_id = imageId`,
+A tabela contém `payload`, `output_topic` e `request_event_id UNIQUE`, além dos
+campos operacionais da outbox. `aggregate_id = imageId`,
 `aggregate_type = IMAGE`, `id = eventId` do resultado. O status inicial é
 `PENDING` para ambos os resultados, `retry_count = 0`, `retry_limit = 10`.
 Os timestamps de publicação/tentativa começam nulos; pertencem ao publicador.
@@ -183,3 +316,43 @@ backend de logs pode transformá-lo em alerta sem abrir uma porta HTTP no worker
 
 Referências do adaptador: [opções do ImageMagick](https://imagemagick.org/command-line-options/),
 [WebP](https://imagemagick.org/webp/) e [consumer franz-go](https://pkg.go.dev/github.com/twmb/franz-go/pkg/kgo).
+
+## Status de implementação
+
+- [x] Contrato de entrada v1 e validação de roteamento.
+- [x] Consumer Kafka com commit explícito e proteção contra rebalance.
+- [x] JPEG, PNG, GIF e WebP como formatos de entrada.
+- [x] JPEG, PNG e WebP como formatos de saída.
+- [x] Preservação de GIF e WebP animado em saídas WebP.
+- [x] Buckets separados para originais e versões processadas.
+- [x] Outbox PostgreSQL, idempotência e lock por `imageId`.
+- [x] Rollback de uploads e reconciliação de commits ambíguos.
+- [x] CI com build, race detector, cobertura e `govulncheck`.
+- [ ] Publicador externo da outbox.
+- [ ] Política de quarentena ou DLQ para envelopes irroteáveis.
+- [ ] Reconciliação automática de objetos órfãos após queda abrupta.
+- [ ] Métricas persistentes e alertas operacionais.
+- [ ] Imagem de container e manifestos de deployment.
+
+## Princípio de engenharia
+
+O pipeline de mídia da Werant segue um princípio simples:
+
+**Entradas não confiáveis devem atravessar limites explícitos antes de consumir
+recursos caros ou produzir efeitos permanentes.**
+
+Mensagens permanecem pequenas, os formatos são detectados pelo conteúdo, todas
+as versões são preparadas antes dos uploads e o offset só é confirmado depois
+que storage, outbox e limpeza atingem um estado reconciliável.
+
+---
+
+<div align="center">
+
+**WERANT / IMAGE PROCESSING WORKER**
+
+_Construído para pipelines de mídia resilientes._
+
+<sub>Go · Kafka · MinIO · PostgreSQL · ImageMagick</sub>
+
+</div>

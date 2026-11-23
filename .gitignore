@@ -1,8 +1,51 @@
-.env
-.idea/
-payload.json
-coverage.out
-coverage.txt
-test.log
-image-processing-worker
+# Binaries and native build artifacts
+/image-processing-worker
+/bin/
+/build/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test, coverage, and profiling artifacts
 *.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+*.prof
+*.pprof
+
+# Go workspace files are local to a multi-module checkout
+go.work
+go.work.sum
+
+# Local environment and credentials
+.env
+.env.*
+!.env*.example
+
+# Local development artifacts
+/payload.json
+*.log
+/tmp/
+/.cache/
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# Operating systems
+.DS_Store
+.AppleDouble
+Thumbs.db
+Desktop.ini
+
+# Dependencies are intentionally not ignored. If vendoring is adopted,
+# vendor/ should be committed with go.mod and go.sum.
